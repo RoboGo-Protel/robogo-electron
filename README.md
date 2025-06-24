@@ -1,13 +1,13 @@
 # RoboGo Electron Desktop Application
 
-Desktop application untuk mengontrol robot RoboGo menggunakan komunikasi serial. Aplikasi ini akan otomatis menjalankan client (Next.js) dan server (Node.js) ketika dimulai.
+Desktop application untuk mengontrol robot RoboGo menggunakan komunikasi serial. Aplikasi ini akan otomatis menjalankan client (Next.js) ketika dimulai, tanpa membutuhkan server Node.js terpisah.
 
 ## Fitur
 
 - Kontrol robot melalui komunikasi serial
 - Deteksi otomatis port serial ESP32/Arduino
 - Interface desktop yang mudah digunakan
-- **Auto-start client dan server** - Tidak perlu menjalankan secara manual
+- **Auto-start client (Next.js)** - Tidak perlu menjalankan secara manual
 - Fallback ke website online jika local client tidak tersedia
 
 ## Instalasi Dependencies
@@ -28,12 +28,8 @@ File ini akan otomatis menginstall semua dependencies yang diperlukan.
 # Install dependencies untuk Electron
 npm install
 
-# Install dependencies untuk client
+# Install dependencies untuk client (Next.js)
 cd ../client
-npm install
-
-# Install dependencies untuk server
-cd ../server
 npm install
 
 # Kembali ke direktori electron
@@ -68,18 +64,17 @@ npm start
 
 Ketika aplikasi Electron dimulai:
 
-1. **Server dimulai** dengan `node server.js` di direktori `../server`
-2. **Client di-build ulang** untuk production dengan `npm run build` (1-2 menit)
-3. **Client dimulai** dengan `npm start` di direktori `../client`
-4. **Aplikasi menunggu** hingga kedua service siap (sekitar 2-3 menit total)
-5. **Window dibuka** dan mencoba load `http://localhost:3000`
-6. **Jika gagal**, fallback ke `https://robogo.website`
+1. **Client di-build ulang** untuk production dengan `npm run build` (1-2 menit)
+2. **Client dimulai** dengan `npm start` di direktori `../client`
+3. **Aplikasi menunggu** hingga service siap (sekitar 1-2 menit total)
+4. **Window dibuka** dan mencoba load `http://localhost:3000`
+5. **Jika gagal**, fallback ke `https://robogo.website`
 
-⚠️ **Penting**: Startup pertama akan memakan waktu 2-3 menit karena proses build client.
+⚠️ **Penting**: Startup pertama akan memakan waktu 1-2 menit karena proses build client.
 
 ## Status Service
 
-Anda dapat melihat status server dan client di console Electron:
+Anda dapat melihat status client di console Electron:
 
 - Buka DevTools dengan `Ctrl+Shift+I` (development mode)
 - Lihat tab Console untuk log startup process
@@ -104,7 +99,7 @@ npm --version
 
 ### Jika ada error port sudah digunakan
 
-1. Tutup semua aplikasi yang menggunakan port 3000 dan 8000
+1. Tutup semua aplikasi yang menggunakan port 3000
 2. Atau restart komputer untuk membersihkan port yang terpakai
 
 ### Check setup sebelum menjalankan
@@ -176,5 +171,5 @@ npm run build:dir
 
 ### Aplikasi tidak bisa koneksi ke Next.js
 
-- Pastikan server Next.js berjalan di `http://localhost:3000`
+- Pastikan client Next.js berjalan di `http://localhost:3000`
 - Atau ubah URL di `index.js` sesuai dengan port yang digunakan
