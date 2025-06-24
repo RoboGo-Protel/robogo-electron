@@ -1,0 +1,24 @@
+{
+  "name": "robogo-electron",
+  "version": "1.0.0",
+  "main": "main.js",
+  "homepage": "./",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron ."
+  },
+  "keywords": [
+    "robogo",
+    "robot",
+    "control"
+  ],
+  "author": "RoboGo Team",
+  "license": "ISC",
+  "description": "RoboGo Desktop Application for Robot Control",
+  "devDependencies": {
+    "electron": "^36.4.0"
+  },
+  "dependencies": {
+    "serialport": "^13.0.0"
+  }
+}
