@@ -4,6 +4,7 @@
   "main": "main.js",
   "homepage": "./",
   "scripts": {
+    "release": "standard-version",
     "start": "electron .",
     "dev": "NODE_ENV=development electron ."
   },
@@ -16,7 +17,8 @@
   "license": "ISC",
   "description": "RoboGo Desktop Application for Robot Control",
   "devDependencies": {
-    "electron": "^36.4.0"
+    "electron": "^36.4.0",
+    "standard-version": "^9.5.0"
   },
   "dependencies": {
     "serialport": "^13.0.0"
