@@ -78,4 +78,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Read file content API
   readFileContent: (filePath) =>
     ipcRenderer.invoke("read-file-content", filePath),
+
+  // Show file in system explorer
+  showItemInFolder: (filePath) =>
+    ipcRenderer.invoke("show-item-in-folder", filePath),
 });

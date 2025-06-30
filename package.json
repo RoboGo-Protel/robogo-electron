@@ -6,7 +6,11 @@
   "scripts": {
     "release": "standard-version",
     "start": "electron .",
-    "dev": "NODE_ENV=development electron ."
+    "dev": "NODE_ENV=development electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:portable": "electron-builder --win portable",
+    "dist": "npm run build:win"
   },
   "keywords": [
     "robogo",
@@ -18,9 +22,75 @@
   "description": "RoboGo Desktop Application for Robot Control",
   "devDependencies": {
     "electron": "^36.4.0",
+    "electron-builder": "^26.0.12",
     "standard-version": "^9.5.0"
   },
   "dependencies": {
     "serialport": "^13.0.0"
+  },
+  "build": {
+    "appId": "com.robogo.desktop",
+    "productName": "RoboGo Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "static-server.js",
+      "fixed-handler.js",
+      "assets/**",
+      "node_modules/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../client/out",
+        "to": "client/out",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": "RoboGo",
+      "shortcutName": "RoboGo Desktop",
+      "uninstallDisplayName": "RoboGo Desktop",
+      "license": "../README.md",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "artifactName": "RoboGo-Setup-${version}.exe",
+      "displayLanguageSelector": false,
+      "installerLanguages": [
+        "en_US"
+      ]
+    },
+    "portable": {
+      "artifactName": "RoboGo-Portable-${version}.exe"
+    }
   }
 }

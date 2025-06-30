@@ -1,12 +1,315 @@
 const { app, BrowserWindow, ipcMain, shell, session } = require("electron");
 const { SerialPort } = require("serialport");
+const { spawn } = require("child_process");
 const path = require("path");
 const { dialog } = require("electron");
 const fs = require("fs");
+const os = require("os");
+const StaticServer = require("./static-server");
 
 let mainWindow;
 let currentPort = null;
 let serialDataBuffer = ""; // Buffer untuk menggabungkan data serial
+let staticServer = null; // Built-in static server
+let nextProcess = null; // Next.js development process
+
+// Function to start static server (no external dependencies)
+function startStaticServer() {
+  return new Promise((resolve, reject) => {
+    console.log("[LAUNCHER] Starting built-in static server...");
+
+    // Find static files directory
+    const isDev = process.env.NODE_ENV === "development";
+    const isPackaged = app.isPackaged;
+
+    let staticDir = null;
+
+    if (isPackaged) {
+      // In packaged app, try different paths for production build output
+      // 🔧 CRITICAL FIX: Proper path detection for portable executable
+      console.log("[LAUNCHER] 🔍 Debugging packaged app paths:");
+      console.log("[LAUNCHER] process.execPath:", process.execPath);
+      console.log("[LAUNCHER] process.resourcesPath:", process.resourcesPath);
+      console.log("[LAUNCHER] __dirname:", __dirname);
+      console.log("[LAUNCHER] process.cwd():", process.cwd());
+
+      const possiblePaths = [
+        // Try resources path first (standard Electron packaging)
+        path.join(process.resourcesPath, "client", "out"),
+        path.join(process.resourcesPath, "app", "client", "out"),
+        path.join(process.resourcesPath, "app.asar.unpacked", "client", "out"),
+
+        // Try relative to executable directory
+        path.join(path.dirname(process.execPath), "resources", "client", "out"),
+        path.join(
+          path.dirname(process.execPath),
+          "resources",
+          "app",
+          "client",
+          "out"
+        ),
+        path.join(path.dirname(process.execPath), "client", "out"),
+
+        // Try relative to current working directory
+        path.join(process.cwd(), "resources", "client", "out"),
+        path.join(process.cwd(), "client", "out"),
+
+        // Try relative to __dirname (current main.js location)
+        path.join(__dirname, "client", "out"),
+        path.join(__dirname, "..", "client", "out"),
+        path.join(__dirname, "..", "..", "client", "out"),
+
+        // Legacy Next.js paths (fallback)
+        path.join(process.resourcesPath, "client", ".next", "standalone"),
+        path.join(process.resourcesPath, "client", ".next", "static"),
+        path.join(__dirname, "client", ".next", "standalone"),
+        path.join(__dirname, "client", ".next", "static"),
+      ];
+
+      console.log("[LAUNCHER] Packaged app detected, trying static dirs:");
+      for (const testPath of possiblePaths) {
+        console.log("[LAUNCHER] Checking:", testPath);
+        if (fs.existsSync(testPath)) {
+          staticDir = testPath;
+          console.log("[LAUNCHER] ✅ Found static files at:", staticDir);
+          break;
+        } else {
+          console.log("[LAUNCHER] ✗ Not found:", testPath);
+        }
+      }
+    } else {
+      // Development mode - try different build outputs
+      const possiblePaths = [
+        path.join(__dirname, "..", "client", "out"),
+        path.join(__dirname, "..", "client", ".next", "standalone"),
+        path.join(__dirname, "..", "client", ".next", "static"),
+        path.join(__dirname, "..", "client", ".next"),
+      ];
+
+      for (const testPath of possiblePaths) {
+        if (fs.existsSync(testPath)) {
+          staticDir = testPath;
+          console.log(
+            "[LAUNCHER] ✅ Found development static files at:",
+            staticDir
+          );
+          break;
+        }
+      }
+    }
+
+    if (!staticDir || !fs.existsSync(staticDir)) {
+      const error = new Error(
+        "Static files directory not found. Please build the client first."
+      );
+      console.error("[LAUNCHER]", error.message);
+      reject(error);
+      return;
+    }
+
+    console.log("[LAUNCHER] Using static directory:", staticDir);
+
+    // Start static server
+    staticServer = new StaticServer(3000);
+    staticServer
+      .start(staticDir)
+      .then(() => {
+        console.log("[LAUNCHER] ✅ Static server started successfully");
+        resolve();
+      })
+      .catch((error) => {
+        console.error("[LAUNCHER] ❌ Failed to start static server:", error);
+        reject(error);
+      });
+  });
+}
+
+// Function to stop static server
+function stopStaticServer() {
+  if (staticServer) {
+    console.log("[LAUNCHER] Stopping static server...");
+    staticServer.stop();
+    staticServer = null;
+  }
+}
+
+// Function to start Next.js server (development + packaged mode)
+function startNextJS() {
+  return new Promise((resolve, reject) => {
+    console.log("[LAUNCHER] Starting Next.js server...");
+
+    const isPackaged = app.isPackaged;
+
+    // Determine the client path relative to electron folder
+    let clientPath = path.join(__dirname, "..", "client");
+
+    if (isPackaged) {
+      // In packaged app, try different paths
+      const possiblePaths = [
+        path.join(process.resourcesPath, "client"),
+        path.join(__dirname, "client"),
+        path.join(__dirname, "..", "client"),
+        path.join(path.dirname(process.execPath), "client"),
+      ];
+
+      console.log("[LAUNCHER] Packaged app detected, trying paths:");
+      for (const testPath of possiblePaths) {
+        console.log("[LAUNCHER] Checking:", testPath);
+        if (fs.existsSync(testPath)) {
+          clientPath = testPath;
+          console.log("[LAUNCHER] ✓ Found client at:", clientPath);
+          break;
+        } else {
+          console.log("[LAUNCHER] ✗ Not found:", testPath);
+        }
+      }
+    }
+
+    console.log("[LAUNCHER] Using client path:", clientPath);
+
+    // Check if client folder exists
+    if (!fs.existsSync(clientPath)) {
+      reject(new Error("Client folder not found: " + clientPath));
+      return;
+    }
+
+    console.log("[LAUNCHER] Starting Next.js server...");
+    const startCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+    let startArgs;
+
+    // Use production mode for better performance
+    if (isPackaged) {
+      console.log(
+        "[LAUNCHER] Using production server for better performance..."
+      );
+      startArgs = ["start"];
+    } else {
+      console.log("[LAUNCHER] Using development server...");
+      startArgs = ["run", "dev"];
+    }
+
+    console.log("[LAUNCHER] Command:", startCommand, startArgs.join(" "));
+    console.log("[LAUNCHER] Working directory:", clientPath);
+
+    nextProcess = spawn(startCommand, startArgs, {
+      cwd: clientPath,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: true,
+    });
+
+    let serverReady = false;
+
+    nextProcess.stdout.on("data", (data) => {
+      const output = data.toString();
+      console.log("[NEXT]", output);
+
+      // Check if server is ready - improved detection for both dev and production
+      if (
+        output.includes("localhost:3000") ||
+        output.includes("Ready on") ||
+        output.includes("ready on") ||
+        output.includes("Local:") ||
+        output.includes("started server on") ||
+        output.includes("Local:        http://localhost:3000") ||
+        output.includes("- Local:      http://localhost:3000") ||
+        output.includes("ready - started server") ||
+        output.includes("▲ Next.js") ||
+        output.match(/server.*(?:running|listening|started).*3000/i) ||
+        output.match(/ready.*3000/i) ||
+        output.match(/listening.*3000/i) ||
+        output.match(/started.*server.*3000/i)
+      ) {
+        if (!serverReady) {
+          serverReady = true;
+          console.log("[LAUNCHER] ✅ Next.js development server is ready!");
+          resolve();
+        }
+      }
+    });
+
+    nextProcess.stderr.on("data", (data) => {
+      const output = data.toString();
+      console.error("[NEXT ERROR]", output);
+
+      // Some warnings are normal, only reject on severe errors
+      if (
+        output.includes("EADDRINUSE") ||
+        output.includes("Error:") ||
+        output.includes("MODULE_NOT_FOUND")
+      ) {
+        if (!serverReady) {
+          reject(
+            new Error("Next.js development server failed to start: " + output)
+          );
+        }
+      }
+    });
+
+    nextProcess.on("error", (error) => {
+      console.error(
+        "[LAUNCHER] Failed to start Next.js development server:",
+        error
+      );
+      if (!serverReady) {
+        reject(error);
+      }
+    });
+
+    nextProcess.on("close", (code) => {
+      console.log(
+        "[LAUNCHER] Next.js development server exited with code:",
+        code
+      );
+      nextProcess = null;
+    });
+
+    // Extended timeout for packaged mode + fallback checking
+    const timeoutDuration = isPackaged ? 120000 : 60000; // 2 minutes for packaged, 1 minute for dev
+    setTimeout(() => {
+      if (!serverReady) {
+        console.log("[LAUNCHER] ⚠️ Timeout waiting for Next.js server");
+        console.log(
+          "[LAUNCHER] Attempting to connect to check if server is running..."
+        );
+
+        // Try to connect to localhost:3000 to check if server is actually running
+        const http = require("http");
+        const req = http.get("http://localhost:3000", (res) => {
+          console.log(
+            "[LAUNCHER] ✅ Server is actually running! Proceeding..."
+          );
+          if (!serverReady) {
+            serverReady = true;
+            resolve();
+          }
+        });
+
+        req.on("error", (err) => {
+          console.error("[LAUNCHER] ❌ Server is not responding:", err.message);
+          reject(
+            new Error(
+              "Timeout waiting for Next.js server to start. Please try restarting the application."
+            )
+          );
+        });
+
+        req.setTimeout(10000, () => {
+          req.destroy();
+          reject(new Error("Timeout waiting for Next.js server to start"));
+        });
+      }
+    }, timeoutDuration);
+  });
+}
+
+// Function to stop Next.js server
+function stopNextJS() {
+  if (nextProcess) {
+    console.log("[LAUNCHER] Stopping Next.js server...");
+    nextProcess.kill();
+    nextProcess = null;
+  }
+}
 
 // Function to process serial data buffer and extract complete JSON objects
 function processSerialBuffer() {
@@ -301,8 +604,144 @@ function getLocalModeFromConfig() {
   return false;
 }
 
-function createWindow() {
+async function createWindow() {
   console.log("Starting RoboGo Electron App...");
+
+  // Show loading window first
+  const loadingWindow = new BrowserWindow({
+    width: 400,
+    height: 300,
+    frame: false,
+    alwaysOnTop: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  // Simple loading HTML
+  loadingWindow.loadURL(`data:text/html,
+    <html>
+      <head>
+        <style>
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin: 0;
+            padding: 40px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            height: 100vh;
+            box-sizing: border-box;
+          }
+          .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+          }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          .status { font-size: 14px; opacity: 0.9; margin-top: 10px; }
+        </style>
+      </head>
+      <body>
+        <h2>🤖 RoboGo Desktop</h2>
+        <div class="spinner"></div>
+        <div class="status">Starting application...</div>
+        <div class="status">Please wait, this may take up to 2 minutes</div>
+      </body>
+    </html>
+  `);
+  // ✅ PORTABLE MODE: Use static server only (no Node.js/npm dependencies!)
+  // This serves pre-built static files directly - instant startup!
+  try {
+    console.log(
+      "🚀 Starting portable static server (NO Node.js/npm required)..."
+    );
+    await startStaticServer();
+    console.log("✅ Portable app started successfully - INSTANT loading!");
+
+    // 🔧 CRITICAL FIX: Set localMode=true for portable app immediately
+    // This prevents the React app from getting stuck in loading/API calls
+    console.log("🔧 Setting localMode=true for portable deployment...");
+    try {
+      if (!configPath) initializeConfigPath();
+
+      let config = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      }
+
+      // Force local mode for portable app
+      config.localMode = true;
+      config.portableMode = true; // Flag to indicate this is portable deployment
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log("✅ Forced localMode=true for portable app");
+    } catch (configError) {
+      console.error(
+        "⚠️ Error setting localMode, but continuing...",
+        configError
+      );
+    }
+
+    // Close loading window
+    loadingWindow.close();
+  } catch (error) {
+    console.error("❌ Failed to start static server:", error);
+    console.log("🔧 This means the app needs to be built first.");
+
+    // Show build instruction instead of trying Next.js fallback
+    loadingWindow.loadURL(`data:text/html,
+      <html>
+        <head>
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              background: #ff9800;
+              color: white;
+              margin: 0;
+              padding: 40px;
+              text-align: center;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              height: 100vh;
+              box-sizing: border-box;
+              line-height: 1.6;
+            }
+            .code { 
+              background: rgba(0,0,0,0.2); 
+              padding: 10px; 
+              border-radius: 5px; 
+              font-family: monospace;
+              margin: 10px 0;
+            }
+          </style>
+        </head>
+        <body>
+          <h2>🔧 App Not Built Yet</h2>
+          <p>This portable app needs to be built first.</p>
+          <p>Please run:</p>
+          <div class="code">build-portable.bat</div>
+          <p>Then restart the application.</p>
+          <p style="font-size: 12px; opacity: 0.8;">This builds static files for portable deployment</p>
+        </body>
+      </html>
+    `);
+
+    setTimeout(() => {
+      loadingWindow.close();
+      app.quit();
+    }, 5000);
+    return;
+  }
 
   // Set up permission request handler for geolocation
   session.defaultSession.setPermissionRequestHandler(
@@ -1170,7 +1609,8 @@ ipcMain.handle(
           // Set as default logs folder
           setLogsSaveFolderToConfig(defaultBaseFolder);
           baseFolder = defaultBaseFolder;
-          console.log("[MAIN] Set default base folder for images:", baseFolder);        }
+          console.log("[MAIN] Set default base folder for images:", baseFolder);
+        }
 
         // Check if folderPath is already absolute to avoid path doubling
         if (path.isAbsolute(folderPath)) {
@@ -1321,16 +1761,23 @@ ipcMain.handle("write-logs-to-file", async (event, content, filename) => {
 });
 
 // Read file handler
-ipcMain.handle("read-file", async (event, relativeFilePath) => {
+ipcMain.handle("read-file", async (event, filePath) => {
   try {
-    console.log("[MAIN] Reading file:", relativeFilePath);
+    console.log("[MAIN] Reading file:", filePath);
 
-    // Base path is Documents/RoboGo/
-    const documentsPath = path.join(require("os").homedir(), "Documents");
-    const baseFolder = path.join(documentsPath, "RoboGo");
-    const fullPath = path.join(baseFolder, relativeFilePath);
+    let fullPath;
 
-    console.log("[MAIN] Full file path:", fullPath);
+    // Check if the path is already absolute
+    if (path.isAbsolute(filePath)) {
+      fullPath = filePath;
+      console.log("[MAIN] Using absolute path:", fullPath);
+    } else {
+      // Base path is Documents/RoboGo/
+      const documentsPath = path.join(require("os").homedir(), "Documents");
+      const baseFolder = path.join(documentsPath, "RoboGo");
+      fullPath = path.join(baseFolder, filePath);
+      console.log("[MAIN] Constructed path from relative:", fullPath);
+    }
 
     // Check if file exists
     if (!fs.existsSync(fullPath)) {
@@ -1468,6 +1915,11 @@ app.on("window-all-closed", () => {
     currentPort.close();
     currentPort = null;
   }
+
+  // Stop servers
+  stopNextJS();
+  stopStaticServer();
+
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -1622,7 +2074,8 @@ ipcMain.handle("get-images-from-folder", async (event, folderPath) => {
 
     // Get the photo save folder from config
     const photoSaveFolder = getPhotoSaveFolderFromConfig();
-    console.log("[MAIN] Photo save folder from config:", photoSaveFolder);    if (!photoSaveFolder) {
+    console.log("[MAIN] Photo save folder from config:", photoSaveFolder);
+    if (!photoSaveFolder) {
       console.log("[MAIN] ERROR: Photo save folder not configured");
       return { success: false, error: "Photo save folder not configured" };
     }
@@ -1634,7 +2087,9 @@ ipcMain.handle("get-images-from-folder", async (event, folderPath) => {
       console.log("[MAIN] folderPath is absolute, using as-is");
       fullFolderPath = path.normalize(folderPath);
     } else {
-      console.log("[MAIN] folderPath is relative, joining with photoSaveFolder");
+      console.log(
+        "[MAIN] folderPath is relative, joining with photoSaveFolder"
+      );
       fullFolderPath = path.join(photoSaveFolder, folderPath);
     }
     console.log("[MAIN] Full folder path:", fullFolderPath);
@@ -1778,7 +2233,8 @@ ipcMain.handle("get-ultrasonic-files", async (event, folderPath) => {
 
     // Get the photo save folder from config (this is our base folder)
     const photoSaveFolder = getPhotoSaveFolderFromConfig();
-    console.log("[MAIN] Base folder from config:", photoSaveFolder);    if (!photoSaveFolder) {
+    console.log("[MAIN] Base folder from config:", photoSaveFolder);
+    if (!photoSaveFolder) {
       console.log("[MAIN] ERROR: Base folder not configured");
       return { success: false, error: "Base folder not configured" };
     }
@@ -1790,7 +2246,9 @@ ipcMain.handle("get-ultrasonic-files", async (event, folderPath) => {
       console.log("[MAIN] folderPath is absolute, using as-is");
       fullFolderPath = path.normalize(folderPath);
     } else {
-      console.log("[MAIN] folderPath is relative, joining with photoSaveFolder");
+      console.log(
+        "[MAIN] folderPath is relative, joining with photoSaveFolder"
+      );
       fullFolderPath = path.join(photoSaveFolder, folderPath);
     }
     console.log("[MAIN] Full folder path:", fullFolderPath);
@@ -1866,7 +2324,8 @@ ipcMain.handle("read-file-content", async (event, filePath) => {
 
     // Get the photo save folder from config (this is our base folder)
     const photoSaveFolder = getPhotoSaveFolderFromConfig();
-    console.log("[MAIN] Base folder from config:", photoSaveFolder);    if (!photoSaveFolder) {
+    console.log("[MAIN] Base folder from config:", photoSaveFolder);
+    if (!photoSaveFolder) {
       console.log("[MAIN] ERROR: Base folder not configured");
       return { success: false, error: "Base folder not configured" };
     }
@@ -1901,6 +2360,111 @@ ipcMain.handle("read-file-content", async (event, filePath) => {
     return { success: true, content: content };
   } catch (error) {
     console.error("[MAIN] Error reading file content:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Handler untuk menampilkan file di file explorer
+ipcMain.handle("show-item-in-folder", async (event, filePath) => {
+  try {
+    console.log("[MAIN] SHOW ITEM IN FOLDER - START");
+    console.log("[MAIN] ===============================================");
+    console.log("[MAIN] Requested file path:", filePath);
+    console.log("[MAIN] File path type:", typeof filePath);
+
+    // Handle different path formats
+    let targetPath = filePath;
+
+    // If it's a URL (starts with http/https), we can't open it locally
+    if (
+      typeof filePath === "string" &&
+      (filePath.startsWith("http://") || filePath.startsWith("https://"))
+    ) {
+      console.error("[MAIN] Cannot open URL in file explorer:", filePath);
+      return {
+        success: false,
+        error:
+          "Cannot open web URLs in file explorer. This feature only works with local files.",
+      };
+    }
+
+    // If it's a file:// URL, extract the path
+    if (typeof filePath === "string" && filePath.startsWith("file://")) {
+      targetPath = filePath.replace("file://", "");
+      console.log("[MAIN] Converted file:// URL to path:", targetPath);
+    }
+
+    // Handle Windows paths that might have forward slashes
+    if (process.platform === "win32" && typeof targetPath === "string") {
+      targetPath = targetPath.replace(/\//g, "\\");
+      console.log("[MAIN] Converted to Windows path:", targetPath);
+    }
+
+    // Normalize the path and resolve it
+    const normalizedPath = path.normalize(targetPath);
+    console.log("[MAIN] Normalized path:", normalizedPath);
+
+    // If path is relative, try to resolve it from common base paths
+    let fullPath = normalizedPath;
+    if (!path.isAbsolute(normalizedPath)) {
+      const possibleBasePaths = [
+        process.cwd(),
+        path.join(os.homedir(), "Documents", "RoboGo"),
+        path.join(process.cwd(), "reports"),
+      ];
+
+      for (const basePath of possibleBasePaths) {
+        const testPath = path.join(basePath, normalizedPath);
+        console.log("[MAIN] Trying path:", testPath);
+        if (fs.existsSync(testPath)) {
+          fullPath = testPath;
+          console.log("[MAIN] Found file at:", fullPath);
+          break;
+        }
+      }
+    }
+
+    console.log("[MAIN] Final path to check:", fullPath);
+
+    // Check if file exists
+    if (!fs.existsSync(fullPath)) {
+      console.error("[MAIN] File does not exist:", fullPath);
+      console.log("[MAIN] Current working directory:", process.cwd());
+      console.log("[MAIN] User home directory:", os.homedir());
+
+      // List directory contents for debugging
+      const parentDir = path.dirname(fullPath);
+      if (fs.existsSync(parentDir)) {
+        console.log("[MAIN] Parent directory exists:", parentDir);
+        try {
+          const dirContents = fs.readdirSync(parentDir);
+          console.log(
+            "[MAIN] Parent directory contents:",
+            dirContents.slice(0, 10)
+          ); // Show first 10 items
+        } catch (e) {
+          console.log(
+            "[MAIN] Could not read parent directory contents:",
+            e.message
+          );
+        }
+      } else {
+        console.log("[MAIN] Parent directory does not exist:", parentDir);
+      }
+
+      return { success: false, error: `File not found: ${fullPath}` };
+    }
+
+    // Show the file in the system's file manager
+    shell.showItemInFolder(fullPath);
+    console.log("[MAIN] Successfully showed item in folder");
+
+    console.log("[MAIN] SHOW ITEM IN FOLDER - END");
+    console.log("[MAIN] ===============================================");
+
+    return { success: true };
+  } catch (error) {
+    console.error("[MAIN] Error showing item in folder:", error);
     return { success: false, error: error.message };
   }
 });
